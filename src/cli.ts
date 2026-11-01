@@ -17,7 +17,7 @@ Usage:
   fireshell build [--mode=dev|prod]     compile backend + UI, assemble app dir
   fireshell package [--target=deb,...] [--dry-run]
   fireshell doctor                      check toolchain and native deps
-  fireshell clean                       remove build output and caches
+  fireshell clean [--cache]              remove build output (add --cache for the runtime)
 
 Global flags:
   --dry-run        print commands instead of executing them
@@ -67,7 +67,7 @@ export async function main(argv: string[]): Promise<void> {
         await doctor();
         return;
       case "clean":
-        await clean();
+        await clean({ cache: flags.cache === true });
         return;
       case "version":
       case "--version": {

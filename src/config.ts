@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
 import { FireShellError } from "./util.ts";
 
@@ -242,9 +243,16 @@ function normalizePaths(config: FireShellConfig, root: string): FireShellConfig 
     gecko: {
       ...config.gecko,
       localPath: config.gecko.localPath ? abs(config.gecko.localPath) : undefined,
-      cacheDir: config.gecko.cacheDir ? abs(config.gecko.cacheDir) : join(root, ".fireshell/cache"),
+      // User-level by default: one runtime download serves every project.
+      cacheDir: config.gecko.cacheDir ? abs(config.gecko.cacheDir) : defaultCacheDir(),
     },
   };
+}
+
+/** Shared runtime cache. Override per project with `gecko.cacheDir`. */
+export function defaultCacheDir(): string {
+  const base = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
+  return join(base, "fireshell", "gecko");
 }
 
 /** Extension id used by the manifest and the native host allowlist. */

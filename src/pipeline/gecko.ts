@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, renameSync, rmSync, statSync, chmodSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import type { FireShellConfig } from "../config.ts";
+import { defaultCacheDir } from "../config.ts";
 import { FireShellError, capture, log, run, sizeOf, human } from "../util.ts";
 
 export interface Runtime {
@@ -17,22 +18,108 @@ const MIN_GECKO: Record<FireShellConfig["gecko"]["channel"], string> = {
 };
 
 /** archive.mozilla.org layout for the host platform. Cross-building a Gecko runtime is not supported. */
-function downloadUrl(config: FireShellConfig): string | null {
+export interface DownloadCandidate {
+  url: string;
+  filename: string;
+}
+
+/**
+ * Mirrors, fastest first.
+ * download.mozilla.org redirects to the CDN edge and is normally much faster than
+ * archive.mozilla.org, which serves builds out of archival storage.
+ */
+export function downloadCandidates(config: FireShellConfig): DownloadCandidate[] {
   const { version, channel } = config.gecko;
-  if (!version) return null;
-  // ESR releases live under `releases/<version>esr/`, not `releases/esr/<version>/`.
+  if (!version) return [];
   const releaseDir = channel === "esr" ? `${version}esr` : version;
-  const base = `https://archive.mozilla.org/pub/firefox/releases/${releaseDir}`;
-  switch (process.platform) {
-    case "linux":
-      return `${base}/linux-x86_64/en-US/firefox-${version}.tar.bz2`;
-    case "darwin":
-      return `${base}/mac/en-US/Firefox%20${version}.dmg`;
-    case "win32":
-      return `${base}/win64/en-US/Firefox%20Setup%20${version}.exe`;
-    default:
-      return null;
+  const archiveBase = `https://archive.mozilla.org/pub/firefox/releases/${releaseDir}`;
+
+  if (process.platform === "linux") {
+    const filename = `firefox-${version}.tar.bz2`;
+    const candidates: DownloadCandidate[] = [];
+    if (channel === "release") {
+      candidates.push({
+        url: `https://download.mozilla.org/?product=firefox-${version}&os=linux64&lang=en-US`,
+        filename,
+      });
+    }
+    candidates.push({ url: `${archiveBase}/linux-x86_64/en-US/${filename}`, filename });
+    return candidates;
   }
+  if (process.platform === "darwin") {
+    const filename = `Firefox ${version}.dmg`;
+    return [{ url: `${archiveBase}/mac/en-US/${encodeURIComponent(filename)}`, filename }];
+  }
+  if (process.platform === "win32") {
+    const filename = `Firefox Setup ${version}.exe`;
+    return [{ url: `${archiveBase}/win64/en-US/${encodeURIComponent(filename)}`, filename }];
+  }
+  return [];
+}
+
+/**
+ * Downloads to `dir/filename`, trying each mirror and keeping partial files (`-C -`),
+ * so a dropped connection resumes instead of restarting an 82 MB transfer.
+ * Uses aria2c when present: -x8 -s8 splits into parallel connections, which is what
+ * actually helps when a single TCP stream is throttled.
+ */
+async function downloadArchive(candidates: DownloadCandidate[], dir: string, filename: string): Promise<void> {
+  const dest = join(dir, filename);
+
+  if (Bun.which("aria2c")) {
+    try {
+      await run([
+        "aria2c",
+        "--continue=true",
+        "-x",
+        "8",
+        "-s",
+        "8",
+        "-j",
+        "1",
+        "--file-allocation=none",
+        "--console-log-level=warn",
+        "--summary-interval=1",
+        "-d",
+        dir,
+        "-o",
+        filename,
+        candidates[0]!.url,
+      ]);
+      return;
+    } catch {
+      log.warn("aria2c failed; falling back to curl");
+    }
+  }
+
+  let lastError: unknown = null;
+  for (const candidate of candidates) {
+    try {
+      await run([
+        "curl",
+        "-fL",
+        "--retry",
+        "5",
+        "--retry-delay",
+        "2",
+        "--retry-all-errors",
+        "--connect-timeout",
+        "20",
+        "-C",
+        "-",
+        "-o",
+        dest,
+        candidate.url,
+      ]);
+      return;
+    } catch (err) {
+      lastError = err;
+      log.warn(`download failed from ${new URL(candidate.url).host}`);
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new FireShellError("could not download the Gecko runtime from any mirror");
 }
 
 export async function detectVersion(executable: string): Promise<string | null> {
@@ -58,7 +145,7 @@ export async function ensureRuntime(config: FireShellConfig, opts: { dryRun?: bo
     return { dir: join(executable, ".."), executable, version, source: "system" };
   }
 
-  const cacheRoot = config.gecko.cacheDir ?? join(process.cwd(), ".fireshell/cache");
+  const cacheRoot = config.gecko.cacheDir ?? defaultCacheDir();
   if (config.gecko.localPath) {
     const dir = locateRuntimeRoot(config.gecko.localPath);
     if (!dir) throw new FireShellError(`no browser executable under ${config.gecko.localPath}`);
@@ -83,22 +170,23 @@ export async function ensureRuntime(config: FireShellConfig, opts: { dryRun?: bo
     rmSync(cacheDir, { recursive: true, force: true });
   }
 
-  const url = downloadUrl(config);
-  if (!url) {
+  const candidates = downloadCandidates(config);
+  if (candidates.length === 0) {
     throw new FireShellError(
       `no download URL for ${process.platform}-${process.arch} at Gecko ${version}`,
       "set gecko.localPath to an extracted runtime instead",
     );
   }
+  const filename = candidates[0]!.filename;
   if (opts.dryRun) {
-    log.dim(`$ curl -fL ${url} -o <cache>`);
+    log.dim(`$ aria2c -x8 ${candidates[0]!.url} -> ${cacheDir}/${filename}`);
     return { dir: cacheDir, executable: join(cacheDir, "firefox"), version, source: "portable" };
   }
 
   mkdirSync(cacheRoot, { recursive: true });
-  const archive = join(cacheRoot, basename(new URL(url).pathname));
+  const archive = join(cacheRoot, filename);
   log.step(`fetching Gecko ${version} (${config.gecko.channel})`);
-  await run(["curl", "-fL", "--retry", "3", "-o", archive, url]);
+  await downloadArchive(candidates, cacheRoot, filename);
 
   const stage = `${cacheDir}.partial`;
   rmSync(stage, { recursive: true, force: true });

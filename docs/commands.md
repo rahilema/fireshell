@@ -104,7 +104,11 @@ fireshell build [--mode=dev|prod] [--dry-run] [--verbose]
 
 Default mode is `prod`. Steps, in order:
 
-1. **Runtime** — resolve/cache portable Gecko in `.fireshell/cache`, verify the version floor.
+1. **Runtime** — resolve/cache portable Gecko in the shared cache
+   (`$XDG_CACHE_HOME/fireshell/gecko`, default `~/.cache/fireshell/gecko`), verify the
+   version floor. Mirrors are tried fastest-first (`download.mozilla.org` CDN, then
+   `archive.mozilla.org`) and downloads resume; `aria2c` is used with 8 parallel
+   connections when it is installed.
 2. **Icons** — `config.icon` is resized with **`Bun.Image`** (no sharp, no native deps) into
    `build/<mode>/icons/` at 16/32/48/64/96/128/256/512 px, plus a PNG-in-ICO `app.ico` for
    Windows. If `Bun.Image` is unavailable the source is copied through per size so packaging
@@ -195,12 +199,13 @@ and on Linux the glibc version and FUSE availability.
 ## `fireshell clean`
 
 ```
-fireshell clean
+fireshell clean [--cache]
 ```
 
-Removes `build/`, `dist/`, and the Gecko cache (`gecko.cacheDir`, default `.fireshell/cache`).
-Reports bytes freed per path. Does not touch `node_modules` or the registered native host —
-use the app's uninstaller (or delete the manifest listed by `doctor`) for that.
+Removes `build/` and `dist/`. The Gecko runtime cache is shared across all projects and is
+kept unless you pass `--cache`. Reports bytes freed per path. Does not touch `node_modules`
+or the registered native host — use the app's uninstaller (or delete the manifest listed by
+`doctor`) for that.
 
 ---
 
