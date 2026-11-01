@@ -111,16 +111,16 @@ export type ErrorCode =
   | "FS_NOT_FOUND";
 `;
 
-const RUNTIME_JS = `// FireShell IPC bridge. Injected by the CLI; wraps connectNative with
-// request ids, per-call timeouts and push-event subscriptions.
+const RUNTIME_JS = `// FireShell IPC bridge. Injected by the CLI; wraps connectNative with lazy
+// connection, request ids, per-call timeouts and push-event subscriptions.
 (function () {
   var APP = "__APP_ID__";
-  var port = browser.runtime.connectNative(APP);
+  var port = null;
   var seq = 0;
   var pending = new Map();
   var listeners = new Map();
 
-  port.onMessage.addListener(function (msg) {
+  function onMessage(msg) {
     if (!msg || typeof msg !== "object") return;
     if (!("id" in msg) && typeof msg.event === "string") {
       var handlers = listeners.get(msg.event) || [];
@@ -139,17 +139,31 @@ const RUNTIME_JS = `// FireShell IPC bridge. Injected by the CLI; wraps connectN
     } else {
       entry.resolve(msg.data);
     }
-  });
+  }
 
-  port.onDisconnect.addListener(function () {
+  function failPending(code, message) {
     pending.forEach(function (entry, id) {
       clearTimeout(entry.timer);
-      var err = new Error("backend disconnected");
-      err.code = "FS_DAEMON_UNAVAILABLE";
+      var err = new Error(message);
+      err.code = code;
       entry.reject(err);
       pending.delete(id);
     });
-  });
+  }
+
+  // connectNative throws when the native host manifest is missing or the app is
+  // not registered for this extension id. Connecting lazily keeps the UI alive.
+  function ensurePort() {
+    if (port) return port;
+    var next = browser.runtime.connectNative(APP);
+    next.onMessage.addListener(onMessage);
+    next.onDisconnect.addListener(function () {
+      port = null;
+      failPending("FS_DAEMON_UNAVAILABLE", "backend disconnected");
+    });
+    port = next;
+    return port;
+  }
 
   function invoke(action, payload, options) {
     var id = "r" + (++seq);
@@ -162,7 +176,15 @@ const RUNTIME_JS = `// FireShell IPC bridge. Injected by the CLI; wraps connectN
         reject(err);
       }, timeout);
       pending.set(id, { resolve: resolve, reject: reject, timer: timer });
-      port.postMessage({ id: id, action: action, payload: payload });
+      try {
+        ensurePort().postMessage({ id: id, action: action, payload: payload });
+      } catch (err) {
+        pending.delete(id);
+        clearTimeout(timer);
+        var failure = new Error("backend unavailable: " + (err && err.message ? err.message : String(err)));
+        failure.code = "FS_DAEMON_UNAVAILABLE";
+        reject(failure);
+      }
     });
   }
 
@@ -175,7 +197,7 @@ const RUNTIME_JS = `// FireShell IPC bridge. Injected by the CLI; wraps connectN
     };
   }
 
-  window.fireshell = { invoke: invoke, on: on, port: port, appId: APP };
+  window.fireshell = { invoke: invoke, on: on, getPort: ensurePort, appId: APP };
 })();
 `;
 
@@ -220,6 +242,45 @@ const GITIGNORE = `build/
 dist/
 .fireshell/
 node_modules/
+`;
+
+const BACKGROUND = `// Opens the app window when the add-on loads or the browser starts.
+// A packaged build hands window creation to the launcher; this keeps dev usable.
+// Tracks the window id instead of querying tabs, so no extra permission is needed.
+var appWindowId = null;
+
+function openAppWindow() {
+  if (appWindowId !== null) {
+    return browser.windows
+      .update(appWindowId, { focused: true })
+      .catch(function () {
+        appWindowId = null;
+        return createWindow();
+      });
+  }
+  return createWindow();
+}
+
+function createWindow() {
+  return browser.windows
+    .create({
+      url: browser.runtime.getURL("index.html"),
+      type: "popup",
+      width: 1200,
+      height: 800,
+    })
+    .then(function (win) {
+      appWindowId = win.id;
+    });
+}
+
+browser.windows.onRemoved.addListener(function (id) {
+  if (id === appWindowId) appWindowId = null;
+});
+
+browser.runtime.onStartup.addListener(openAppWindow);
+browser.runtime.onInstalled.addListener(openAppWindow);
+openAppWindow();
 `;
 
 const TSCONFIG = `{
@@ -267,6 +328,7 @@ const FILES: Record<string, string> = {
   "src/main/index.ts": MAIN,
   "src/shared/protocol.ts": PROTOCOL,
   "src/ui/index.html": INDEX_HTML,
+  "src/ui/background.js": BACKGROUND,
   "src/ui/fireshell-runtime.js": RUNTIME_JS,
   "src/ui/app.js": APP_JS,
   ".gitignore": GITIGNORE,

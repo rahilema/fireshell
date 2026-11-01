@@ -74,6 +74,7 @@ fireshell package --target=appimage,deb --dry-run
 │   │   └── index.ts             role dispatcher: launcher | daemon | host
 │   ├── ui/
 │   │   ├── index.html           app window
+│   │   ├── background.js        opens the app window (dev; the launcher does this in prod)
 │   │   ├── app.js               UI logic
 │   │   └── fireshell-runtime.js IPC bridge (connectNative + timeouts + events)
 │   └── shared/

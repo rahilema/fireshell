@@ -24,6 +24,10 @@ export function buildManifest(
     ...(config.features.bulkTransfer ? ["http://127.0.0.1/*"] : []),
   ];
 
+  // Only the background script belongs here. UI scripts are loaded by index.html;
+  // putting them in the background page makes them run against an empty document.
+  const backgroundScripts = ["background.js"].filter((s) => existsSync(join(config.uiDir, s)));
+
   const manifest: ExtensionManifest = {
     manifest_version: 2,
     name: config.productName,
@@ -35,14 +39,14 @@ export function buildManifest(
         strict_min_version: STRICT_MIN_VERSION,
       },
     },
-    background: {
-      // MV2 persistent background is load-bearing: an MV3 event page is suspended
-      // when idle, which drops the connectNative port.
-      scripts: ["fireshell-runtime.js", "app.js"].filter((s) => existsSync(join(config.uiDir, s))),
-      persistent: true,
-    },
     permissions: permissions.filter((p) => p.length > 0),
   };
+
+  if (backgroundScripts.length > 0) {
+    // MV2 persistent background is load-bearing: an MV3 event page is suspended when
+    // idle, which drops the connectNative port.
+    manifest.background = { scripts: backgroundScripts, persistent: true };
+  }
 
   if (Object.keys(iconFiles).length > 0) {
     manifest.icons = iconFiles;
@@ -67,6 +71,10 @@ export async function stageUi(
 ): Promise<{ dir: string; manifest: ExtensionManifest }> {
   // Firefox resolves manifest icons relative to the extension root.
   const iconFiles: Record<string, string> = {};
+
+  if (!existsSync(join(config.uiDir, "background.js"))) {
+    log.warn("no src/ui/background.js: nothing will open the app window");
+  }
 
   if (!opts.dryRun) {
     rmSync(outDir, { recursive: true, force: true });

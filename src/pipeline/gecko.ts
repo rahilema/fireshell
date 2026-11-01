@@ -185,31 +185,42 @@ export async function ensureRuntime(config: FireShellConfig, opts: { dryRun?: bo
 
   mkdirSync(cacheRoot, { recursive: true });
   const archive = join(cacheRoot, filename);
-  log.step(`fetching Gecko ${version} (${config.gecko.channel})`);
-  await downloadArchive(candidates, cacheRoot, filename);
+  if (await Bun.file(archive).exists()) {
+    log.dim(`reusing ${archive}`);
+  } else {
+    log.step(`fetching Gecko ${version} (${config.gecko.channel})`);
+    await downloadArchive(candidates, cacheRoot, filename);
+  }
 
   const stage = `${cacheDir}.partial`;
   rmSync(stage, { recursive: true, force: true });
   mkdirSync(stage, { recursive: true });
 
-  if (archive.endsWith(".tar.bz2") || archive.endsWith(".tar.xz")) {
-    await run(["tar", "-xf", archive, "-C", stage]);
-  } else if (archive.endsWith(".dmg")) {
-    throw new FireShellError(
-      "cannot extract a .dmg on this host",
-      "on macOS mount it with `hdiutil attach` and copy Firefox.app, then set gecko.localPath",
-    );
-  } else if (archive.endsWith(".exe")) {
-    throw new FireShellError(
-      "cannot extract a Windows installer on this host",
-      "use the Firefox zip distribution and set gecko.localPath",
-    );
-  } else {
-    throw new FireShellError(`unsupported Gecko archive format: ${archive}`);
+  try {
+    await extractArchive(archive, stage);
+  } catch (err) {
+    if (err instanceof FireShellError) throw err;
+    // A truncated or corrupt archive is recoverable: fetch once more and retry.
+    log.warn(`extraction failed (${err instanceof Error ? err.message : String(err)}); re-downloading`);
+    try {
+      await Bun.file(archive).delete();
+    } catch {
+      // already gone
+    }
+    rmSync(stage, { recursive: true, force: true });
+    mkdirSync(stage, { recursive: true });
+    await downloadArchive(candidates, cacheRoot, filename);
+    await extractArchive(archive, stage);
   }
 
   const located = locateRuntimeRoot(stage);
-  if (!located) throw new FireShellError(`Gecko archive did not contain a browser layout`);
+  if (!located) {
+    const entries = [...new Bun.Glob("*").scanSync({ cwd: stage, onlyFiles: false })];
+    throw new FireShellError(
+      `Gecko archive did not contain a browser layout (found: ${entries.join(", ") || "nothing"})`,
+      `delete ${archive} and retry, or set gecko.localPath to an extracted runtime`,
+    );
+  }
   rmSync(cacheDir, { recursive: true, force: true });
   renameSync(located, cacheDir);
   rmSync(stage, { recursive: true, force: true });
@@ -249,11 +260,32 @@ function checkVersion(config: FireShellConfig, version: string) {
 /** Finds the directory that actually holds the browser payload inside an extracted archive. */
 export function locateRuntimeRoot(dir: string): string | null {
   if (executableIn(dir)) return dir;
-  for (const entry of new Bun.Glob("*").scanSync({ cwd: dir })) {
+  // onlyFiles defaults to true, which would hide the tarball's `firefox/` directory.
+  for (const entry of new Bun.Glob("*").scanSync({ cwd: dir, onlyFiles: false })) {
     const nested = join(dir, entry);
     if (executableIn(nested)) return nested;
   }
   return null;
+}
+
+async function extractArchive(archive: string, stage: string): Promise<void> {
+  if (archive.endsWith(".tar.bz2") || archive.endsWith(".tar.xz") || archive.endsWith(".tar.gz")) {
+    await run(["tar", "-xf", archive, "-C", stage]);
+    return;
+  }
+  if (archive.endsWith(".dmg")) {
+    throw new FireShellError(
+      "cannot extract a .dmg on this host",
+      "mount it with `hdiutil attach`, copy Firefox.app, then set gecko.localPath",
+    );
+  }
+  if (archive.endsWith(".exe")) {
+    throw new FireShellError(
+      "cannot extract a Windows installer on this host",
+      "use the Firefox zip distribution and set gecko.localPath",
+    );
+  }
+  throw new FireShellError(`unsupported Gecko archive format: ${archive}`);
 }
 
 /** Accepts either a flattened runtime dir or one wrapping a single `firefox/` folder. */
