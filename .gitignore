@@ -1,0 +1,15 @@
+# dependencies
+node_modules/
+
+# CLI build output
+dist/
+build/
+.fireshell/
+
+# TypeScript
+*.tsbuildinfo
+
+# logs and OS noise
+*.log
+.DS_Store
+Thumbs.db

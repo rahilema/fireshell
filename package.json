@@ -1,0 +1,36 @@
+{
+  "name": "@fireshell/cli",
+  "version": "0.1.0",
+  "description": "FireShell build, dev and packaging CLI (Bun + portable Gecko)",
+  "type": "module",
+  "bin": {
+    "fireshell": "./bin/fireshell.ts"
+  },
+  "exports": {
+    ".": "./src/config.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "src",
+    "docs",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "bun run bin/fireshell.ts",
+    "build": "bun build bin/fireshell.ts --compile --minify --outfile dist/fireshell",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/inquirer": "^9.0.0"
+  },
+  "dependencies": {
+    "inquirer": "^9.3.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "license": "MIT"
+}
