@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, chmodSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { FireShellConfig } from "../config.ts";
 import { FireShellError, capture, log, run, sizeOf, human } from "../util.ts";
@@ -72,11 +72,14 @@ export async function ensureRuntime(config: FireShellConfig, opts: { dryRun?: bo
   const version = config.gecko.version!;
   const cacheDir = join(cacheRoot, `gecko-${config.gecko.channel}-${version}-${process.platform}-${process.arch}`);
   if (existsSync(cacheDir)) {
-    const executable = executableIn(cacheDir);
-    if (executable) {
-      return { dir: cacheDir, executable, version, source: "portable" };
+    // Older builds could cache the tar's top-level folder instead of its contents;
+    // normalizeRuntimeDir handles both layouts without a re-download.
+    const root = normalizeRuntimeDir(cacheDir);
+    const executable = root ? executableIn(root) : null;
+    if (root && executable) {
+      return { dir: root, executable, version, source: "portable" };
     }
-    log.warn(`cached runtime at ${cacheDir} is incomplete; re-fetching`);
+    log.warn(`cached runtime at ${cacheDir} is not runnable; re-fetching`);
     rmSync(cacheDir, { recursive: true, force: true });
   }
 
@@ -129,11 +132,19 @@ export async function ensureRuntime(config: FireShellConfig, opts: { dryRun?: bo
   }
 
   const executable = executableIn(cacheDir);
-  if (!executable) throw new FireShellError("fetched runtime has no executable");
-  const detected = (await detectVersion(executable)) ?? version;
-  checkVersion(config, detected);
-  log.ok(`Gecko ${detected} cached at ${cacheDir} (${human(sizeOf(cacheDir))})`);
-  return { dir: cacheDir, executable, version: detected, source: "portable" };
+  if (!executable) {
+    throw new FireShellError(
+      "the Gecko archive yielded no runnable browser binary",
+      "check archive integrity, or set gecko.localPath to an extracted runtime",
+    );
+  }
+  const detected = await detectVersion(executable);
+  if (!detected) {
+    log.warn(`could not read ${executable} --version; assuming ${version}`);
+  }
+  checkVersion(config, detected ?? version);
+  log.ok(`Gecko ${detected ?? version} cached at ${cacheDir} (${human(sizeOf(cacheDir))})`);
+  return { dir: cacheDir, executable, version: detected ?? version, source: "portable" };
 }
 
 function checkVersion(config: FireShellConfig, version: string) {
@@ -150,11 +161,16 @@ function checkVersion(config: FireShellConfig, version: string) {
 /** Finds the directory that actually holds the browser payload inside an extracted archive. */
 export function locateRuntimeRoot(dir: string): string | null {
   if (executableIn(dir)) return dir;
-  for (const entry of new Bun.Glob("*").scanSync({ cwd: dir, onlyFiles: false })) {
+  for (const entry of new Bun.Glob("*").scanSync({ cwd: dir })) {
     const nested = join(dir, entry);
     if (executableIn(nested)) return nested;
   }
   return null;
+}
+
+/** Accepts either a flattened runtime dir or one wrapping a single `firefox/` folder. */
+export function normalizeRuntimeDir(dir: string): string | null {
+  return locateRuntimeRoot(dir);
 }
 
 export function executableIn(dir: string): string | null {
@@ -164,7 +180,19 @@ export function executableIn(dir: string): string | null {
     win32: [join(dir, "firefox.exe")],
   };
   for (const candidate of candidates[process.platform] ?? []) {
-    if (existsSync(candidate)) return candidate;
+    // existsSync is true for directories, and a tarball root is literally named `firefox`.
+    let stats;
+    try {
+      stats = statSync(candidate);
+    } catch {
+      continue;
+    }
+    if (!stats.isFile()) continue;
+    if (process.platform !== "win32" && (stats.mode & 0o111) === 0) {
+      // Extraction that dropped the executable bit (some archive tools do) is recoverable.
+      chmodSync(candidate, 0o755);
+    }
+    return candidate;
   }
   return null;
 }
