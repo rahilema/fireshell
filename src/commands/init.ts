@@ -1,7 +1,9 @@
 import { mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import inquirer from "inquirer";
+import { backgroundScript } from "../templates/background.ts";
 import { projectReadme } from "../templates/project-readme.ts";
+import { hostNameFromAppId } from "../config.ts";
 import { FireShellError, log } from "../util.ts";
 
 export interface InitOptions {
@@ -20,6 +22,7 @@ export default {
   appId: "__APP_ID__",
   productName: "__PRODUCT_NAME__",
   version: "0.1.0",
+  // uiEntry: "index.html",   // page the app window loads
   // icon: "assets/icon.png",   // optional; every size is generated with Bun.Image
 
   gecko: {
@@ -114,7 +117,7 @@ export type ErrorCode =
 const RUNTIME_JS = `// FireShell IPC bridge. Injected by the CLI; wraps connectNative with lazy
 // connection, request ids, per-call timeouts and push-event subscriptions.
 (function () {
-  var APP = "__APP_ID__";
+  var APP = "__HOST_NAME__";
   var port = null;
   var seq = 0;
   var pending = new Map();
@@ -181,7 +184,7 @@ const RUNTIME_JS = `// FireShell IPC bridge. Injected by the CLI; wraps connectN
       } catch (err) {
         pending.delete(id);
         clearTimeout(timer);
-        var failure = new Error("backend unavailable: " + (err && err.message ? err.message : String(err)));
+        var failure = new Error(err && err.message ? err.message : String(err));
         failure.code = "FS_DAEMON_UNAVAILABLE";
         reject(failure);
       }
@@ -244,44 +247,7 @@ dist/
 node_modules/
 `;
 
-const BACKGROUND = `// Opens the app window when the add-on loads or the browser starts.
-// A packaged build hands window creation to the launcher; this keeps dev usable.
-// Tracks the window id instead of querying tabs, so no extra permission is needed.
-var appWindowId = null;
-
-function openAppWindow() {
-  if (appWindowId !== null) {
-    return browser.windows
-      .update(appWindowId, { focused: true })
-      .catch(function () {
-        appWindowId = null;
-        return createWindow();
-      });
-  }
-  return createWindow();
-}
-
-function createWindow() {
-  return browser.windows
-    .create({
-      url: browser.runtime.getURL("index.html"),
-      type: "popup",
-      width: 1200,
-      height: 800,
-    })
-    .then(function (win) {
-      appWindowId = win.id;
-    });
-}
-
-browser.windows.onRemoved.addListener(function (id) {
-  if (id === appWindowId) appWindowId = null;
-});
-
-browser.runtime.onStartup.addListener(openAppWindow);
-browser.runtime.onInstalled.addListener(openAppWindow);
-openAppWindow();
-`;
+const BACKGROUND = backgroundScript("index.html");
 
 const TSCONFIG = `{
   "compilerOptions": {
@@ -394,6 +360,7 @@ export async function init(opts: InitOptions = {}) {
     // Bun.write creates parent directories on demand.
     const rendered = content
       .replaceAll("__APP_ID__", appId)
+      .replaceAll("__HOST_NAME__", hostNameFromAppId(appId))
       .replaceAll("__PRODUCT_NAME__", productName)
       .replaceAll("__PROJECT_NAME__", slug);
     await Bun.write(path, rendered);

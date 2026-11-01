@@ -117,7 +117,9 @@ Default mode is `prod`. Steps, in order:
    with `--minify` when `features.stripBackend` is on. Feature flags become `--define`
    constants, so disabled subsystems are removed by dead-code elimination.
 4. **UI** — stage `features.uiDir` to `build/<mode>/ui`, copy `icons/48.png` and
-   `icons/96.png` into it, and generate `manifest.json` with matching `icons` entries.
+   `icons/96.png` into it, generate a `fireshell-background.js` when the project has no
+   `background.js` (it opens `uiEntry` in a popup window), and generate `manifest.json`
+   with matching `background.scripts` and `icons` entries.
 5. **Extension** — `zip` the staged UI to `build/<mode>/app.xpi`.
 6. **App tree** — assemble `build/<mode>/app`:
    ```
@@ -220,6 +222,7 @@ export default {
   productName: "Example",
   version: "1.0.0",
   uiDir: "src/ui",
+  uiEntry: "index.html",           // page the app window loads
   mainEntry: "src/main/index.ts",
   icon: "assets/icon.png",
 

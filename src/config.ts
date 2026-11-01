@@ -85,6 +85,8 @@ export interface FireShellConfig {
   productName: string;
   version: string;
   uiDir: string;
+  /** Page inside uiDir that the app window loads. */
+  uiEntry: string;
   mainEntry: string;
   icon?: string;
   gecko: GeckoConfig;
@@ -100,6 +102,7 @@ export const DEFAULT_CONFIG: FireShellConfig = {
   productName: "FireShell App",
   version: "0.1.0",
   uiDir: "src/ui",
+  uiEntry: "index.html",
   mainEntry: "src/main/index.ts",
   gecko: {
     source: "portable",
@@ -258,6 +261,20 @@ export function defaultCacheDir(): string {
 /** Extension id used by the manifest and the native host allowlist. */
 export function extensionId(config: FireShellConfig): string {
   return config.gecko.extensionId ?? `${config.appId.replace(/[^a-zA-Z0-9._-]/g, "-")}@fireshell`;
+}
+
+/**
+ * Native messaging host name.
+ * Firefox validates `connectNative(application)` against /^\w+(\.\w+)*$/, so characters
+ * like `-` (legal in an appId) have to be normalized before use.
+ */
+export function hostNameFromAppId(appId: string): string {
+  const normalized = appId.replace(/[^\w.]/g, "_");
+  return /^\w+(\.\w+)*$/.test(normalized) ? normalized : "com.fireshell.host";
+}
+
+export function nativeHostName(config: FireShellConfig): string {
+  return hostNameFromAppId(config.appId);
 }
 
 /**

@@ -1,13 +1,17 @@
 import { existsSync, mkdirSync, cpSync, rmSync } from "node:fs";
 import { join, extname } from "node:path";
 import type { FireShellConfig } from "../config.ts";
-import { extensionId } from "../config.ts";
+import { extensionId, nativeHostName } from "../config.ts";
 import type { BuildMode } from "./backend.ts";
 import type { IconSet } from "./icon.ts";
+import { backgroundScript } from "../templates/background.ts";
 import { FireShellError, log, requireTool, run, sizeOf, human } from "../util.ts";
 
 /** Minimum Gecko that understands browser_specific_settings + policies.json ExtensionSettings. */
 const STRICT_MIN_VERSION = "115.0";
+
+/** Emitted when a project has no src/ui/background.js of its own. */
+const GENERATED_BACKGROUND = "fireshell-background.js";
 
 export interface ExtensionManifest extends Record<string, unknown> {
   manifest_version: 2;
@@ -17,16 +21,15 @@ export function buildManifest(
   config: FireShellConfig,
   mode: BuildMode,
   iconFiles: Record<string, string> = {},
+  backgroundScripts: string[] = [],
 ): ExtensionManifest {
   const permissions = [
     ...(config.features.bunIntegration ? ["nativeMessaging"] : []),
     // Loopback fetch for the bulk transport tier requires an explicit host permission.
     ...(config.features.bulkTransfer ? ["http://127.0.0.1/*"] : []),
+    // Dev only: lets the background script close the harness' blank window.
+    ...(mode === "dev" ? ["tabs"] : []),
   ];
-
-  // Only the background script belongs here. UI scripts are loaded by index.html;
-  // putting them in the background page makes them run against an empty document.
-  const backgroundScripts = ["background.js"].filter((s) => existsSync(join(config.uiDir, s)));
 
   const manifest: ExtensionManifest = {
     manifest_version: 2,
@@ -47,7 +50,6 @@ export function buildManifest(
     // idle, which drops the connectNative port.
     manifest.background = { scripts: backgroundScripts, persistent: true };
   }
-
   if (Object.keys(iconFiles).length > 0) {
     manifest.icons = iconFiles;
   }
@@ -71,10 +73,7 @@ export async function stageUi(
 ): Promise<{ dir: string; manifest: ExtensionManifest }> {
   // Firefox resolves manifest icons relative to the extension root.
   const iconFiles: Record<string, string> = {};
-
-  if (!existsSync(join(config.uiDir, "background.js"))) {
-    log.warn("no src/ui/background.js: nothing will open the app window");
-  }
+  let backgroundScripts: string[] = [];
 
   if (!opts.dryRun) {
     rmSync(outDir, { recursive: true, force: true });
@@ -83,6 +82,26 @@ export async function stageUi(
       throw new FireShellError(`uiDir does not exist: ${config.uiDir}`, "run `fireshell init`");
     }
     cpSync(config.uiDir, outDir, { recursive: true });
+
+    // Projects scaffolded before the host name was normalized still hardcode the raw
+    // appId. Firefox rejects that (it must match /^\w+(\.\w+)*$/), so patch the bridge.
+    const bridge = join(outDir, "fireshell-runtime.js");
+    if (existsSync(bridge)) {
+      const source = await Bun.file(bridge).text();
+      const expected = nativeHostName(config);
+      const patched = source.replace(/var APP = "[^"]*";/, () => `var APP = ${JSON.stringify(expected)};`);
+      if (patched !== source) {
+        await Bun.write(bridge, patched);
+        log.dim(`bridge: connectNative(${expected})`);
+      }
+    }
+
+    backgroundScripts = ["background.js"].filter((name) => existsSync(join(outDir, name)));
+    if (backgroundScripts.length === 0) {
+      await Bun.write(join(outDir, GENERATED_BACKGROUND), backgroundScript(config.uiEntry));
+      backgroundScripts = [GENERATED_BACKGROUND];
+      log.dim(`no background.js in ${config.uiDir}: generated one that opens ${config.uiEntry}`);
+    }
 
     if (opts.icons) {
       for (const size of [48, 96]) {
@@ -95,7 +114,7 @@ export async function stageUi(
     }
   }
 
-  const manifest = buildManifest(config, mode, iconFiles);
+  const manifest = buildManifest(config, mode, iconFiles, backgroundScripts);
   if (!opts.dryRun) {
     await Bun.write(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
   }

@@ -1,7 +1,7 @@
 import { mkdirSync, cpSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { FireShellConfig } from "../config.ts";
-import { extensionId } from "../config.ts";
+import { extensionId, nativeHostName } from "../config.ts";
 import type { Runtime } from "./gecko.ts";
 import { human, log, sizeOf } from "../util.ts";
 
@@ -107,7 +107,8 @@ export async function writeProfileSeed(
 /** Native messaging host manifest template; the launcher substitutes BINARY at install time. */
 export function nativeHostManifest(config: FireShellConfig, binaryPath: string) {
   return {
-    name: config.appId,
+    // Must match connectNative(<name>) and the /^\w+(\.\w+)*$/ rule Firefox enforces.
+    name: nativeHostName(config),
     description: `${config.productName} native host`,
     path: binaryPath,
     type: "stdio",

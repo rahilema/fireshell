@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { FireShellConfig } from "../config.ts";
+import { nativeHostName } from "../config.ts";
 import { nativeHostManifest } from "./layout.ts";
 import { FireShellError, log, run } from "../util.ts";
 
@@ -13,21 +14,22 @@ export interface HostLocation {
 }
 
 export function hostLocation(config: FireShellConfig, platform = process.platform, home = homedir()): HostLocation {
+  const name = nativeHostName(config);
   switch (platform) {
     case "linux": {
       const dir = join(home, ".mozilla", "native-messaging-hosts");
-      return { dir, manifestPath: join(dir, `${config.appId}.json`), registryKey: null };
+      return { dir, manifestPath: join(dir, `${name}.json`), registryKey: null };
     }
     case "darwin": {
       const dir = join(home, "Library", "Application Support", "Mozilla", "NativeMessagingHosts");
-      return { dir, manifestPath: join(dir, `${config.appId}.json`), registryKey: null };
+      return { dir, manifestPath: join(dir, `${name}.json`), registryKey: null };
     }
     case "win32": {
       const dir = join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "FireShell");
       return {
         dir,
-        manifestPath: join(dir, `${config.appId}.json`),
-        registryKey: `HKCU\\Software\\Mozilla\\NativeMessagingHosts\\${config.appId}`,
+        manifestPath: join(dir, `${name}.json`),
+        registryKey: `HKCU\\Software\\Mozilla\\NativeMessagingHosts\\${name}`,
       };
     }
     default:
